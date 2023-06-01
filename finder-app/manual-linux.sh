@@ -1,6 +1,6 @@
 #!/bin/bash
 # Script outline to install and build kernel.
-# Author: Siddhant Jajoo.
+# Author: Hector Redal.
 
 set -e
 set -u
@@ -68,6 +68,7 @@ mkdir -p ${OUTDIR}/rootfs/tmp
 mkdir -p ${OUTDIR}/rootfs/usr
 mkdir -p ${OUTDIR}/rootfs/usr/bin
 mkdir -p ${OUTDIR}/rootfs/usr/sbin
+mkdir -p ${OUTDIR}/rootfs/usr/lib
 mkdir -p ${OUTDIR}/rootfs/var
 mkdir -p ${OUTDIR}/rootfs/var/log
 mkdir -p ${OUTDIR}/rootfs/home
@@ -98,7 +99,6 @@ ${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
 
 # TODO: Add library dependencies to rootfs
 export SYSROOT=$(${CROSS_COMPILE}gcc -print-sysroot)
-echo $SYSROOT
 
 cp ${SYSROOT}/lib/ld-linux-aarch64.so.1 ./lib/
 cp ${SYSROOT}/lib64/libm.so.6 ./lib64/
@@ -110,7 +110,6 @@ sudo mknod -m 666 dev/null c 1 3
 sudo mknod -m 666 dev/console c 5 1
 
 # TODO: Clean and build the writer utility
-echo ${FINDER_APP_DIR}
 cd ${FINDER_APP_DIR}
 make clean
 make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}
@@ -118,18 +117,18 @@ make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}
 # TODO: Copy the finder related scripts and executables to the /home directory
 # on the target rootfs
 cp "$FINDER_APP_DIR/finder.sh" ${OUTDIR}/rootfs/home/
+cp "$FINDER_APP_DIR/finder-test.sh" ${OUTDIR}/rootfs/home/
 cp "$FINDER_APP_DIR/autorun-qemu.sh" ${OUTDIR}/rootfs/home/
+cp "$FINDER_APP_DIR/writer" ${OUTDIR}/rootfs/home/
 mkdir ${OUTDIR}/rootfs/home/conf
 cp conf/username.txt ${OUTDIR}/rootfs/home/conf/
 cp conf/assignment.txt ${OUTDIR}/rootfs/home/conf/
 
 # TODO: Chown the root directory
-sudo chown root:root ${OUTDIR}/rootfs/
+sudo chown -R root:root ${OUTDIR}/rootfs/
 
 # TODO: Create initramfs.cpio.gz
-echo "creating cpio image"
-cd "$OUTDIR/rootfs"
 find . | cpio -H newc -ov --owner root:root > ${OUTDIR}/initramfs.cpio
+cd ${OUTDIR}
 gzip -f ${OUTDIR}/initramfs.cpio
-$FINDER_APP_DIR/start-qemu-terminal.sh ${OUTDIR}
 
