@@ -125,7 +125,8 @@ cp conf/username.txt ${OUTDIR}/rootfs/home/conf/
 cp conf/assignment.txt ${OUTDIR}/rootfs/home/conf/
 
 # TODO: Chown the root directory
-sudo chown -R root:root ${OUTDIR}/rootfs/
+cd ${OUTDIR}/rootfs
+sudo chown -R root:root *
 
 # TODO: Create initramfs.cpio.gz
 find . | cpio -H newc -ov --owner root:root > ${OUTDIR}/initramfs.cpio
