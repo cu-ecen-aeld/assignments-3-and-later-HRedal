@@ -19,16 +19,29 @@ void* threadfunc(void* thread_param)
     
     struct thread_data* thread_func_args = (struct thread_data *) thread_param;
     
-    printf("threadfunc - Enter\n");
+    thread_func_args->thread_complete_success = false;
     usleep(thread_func_args->wait_to_obtain_msM * 1000);
-    printf("threadfunc - 1\n");
-    pthread_mutex_lock(thread_func_args->mutexM);
-    printf("threadfunc - 2\n");
-    usleep(thread_func_args->wait_to_release_msM * 1000);
-    printf("threadfunc - 3\n");
-    pthread_mutex_unlock(thread_func_args->mutexM);
+    int returnCode = pthread_mutex_lock(thread_func_args->mutexM);
+    if (returnCode != 0)
+    {
+      thread_func_args->thread_complete_success = false;
+      ERROR_LOG("failed to obtain the mutex\n");
+    }
+    else
+    {
+	    usleep(thread_func_args->wait_to_release_msM * 1000);
+	    returnCode = pthread_mutex_unlock(thread_func_args->mutexM);
+	    if (returnCode != 0)
+	    {
+             thread_func_args->thread_complete_success = false;
+             ERROR_LOG("failed to obtain the release\n");
+	    }
+	    else
+	    {
+	      thread_func_args->thread_complete_success = true;
+	    }
+    }
     
-    printf("threadfunc - Exit\n");
     return thread_param;
 }
 
@@ -43,36 +56,33 @@ bool start_thread_obtaining_mutex(pthread_t *thread, pthread_mutex_t *mutex,int 
      *
      * See implementation details in threading.h file comment block
      */
-    printf("start_thread_obtaining_mutext - Enter\n");
     struct thread_data* theThreadData   = malloc(sizeof(theThreadData));
-    pthread_t           theThread;
-    int                 theError     = 0;
-    bool                theResMethod = false;
+    bool                theResMethod    = false;
     
-    printf("start_thread_obtaining_mutext - 0\n");
-    
-    theThreadData->wait_to_obtain_msM   = wait_to_obtain_ms;
-    theThreadData->wait_to_release_msM  = wait_to_release_ms;
-    theThreadData->mutexM               = mutex;
-    
-    printf("start_thread_obtaining_mutext - 1\n");
-    theError = pthread_create(&theThread, NULL, &threadfunc, theThreadData);
-    printf("start_thread_obtaining_mutext - 2\n");
-    theThreadData->threadM = theThread;
-    pthread_join(theThread, (void**) &theThreadData);
-    
-    free(theThreadData);
-    
-    if (theError)
+    if (theThreadData == 0L)
     {
+      ERROR_LOG("Out of memory\n");
+      return false;
+    }
+
+    
+    theThreadData->thread_complete_success = false;
+    theThreadData->wait_to_obtain_msM      = wait_to_obtain_ms;
+    theThreadData->wait_to_release_msM     = wait_to_release_ms;
+    theThreadData->mutexM                  = mutex;
+    
+    int returnCode = pthread_create(thread, NULL, &threadfunc, theThreadData);
+    
+    if (returnCode != 0)
+    {
+      ERROR_LOG("Failed to create the thread");
       theResMethod = false;
     }
     else
     {
       theResMethod = true;
     }
-    
-    printf("start_thread_obtaining_mutext - Exit\n");
+        
     return theResMethod;
 }
 
