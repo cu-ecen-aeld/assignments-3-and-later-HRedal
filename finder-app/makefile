@@ -17,4 +17,6 @@ writer: $(OBJ)
 	$(CC) -o $@ $^ $(CFLAGS) $(LIBS)
 	
 clean:
-	rm -f ./*.o *~ 
+	rm -f ./*.o *~
+	
+all: clean writer 
