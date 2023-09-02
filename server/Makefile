@@ -18,7 +18,6 @@ aesdsocket : $(OBJ)
 	
 clean:
 	rm -f ./*.o *~
-	rm aesdsocket
 	
 all: clean aesdsocket
 default: aesdsocket 
