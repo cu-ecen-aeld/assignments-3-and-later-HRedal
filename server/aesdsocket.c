@@ -74,11 +74,21 @@ int main(int argc, char *argv[]) {
    int				numbytesSent;
    int				indexInitBuffer;
    char 			buffer[MAXDATASIZE];
-   int 			yes=1;
+   // int 			yes=1;
    
-   bool                        signalRaised = false;
    int                         returnCode   = 0;
    int                         stringLength = 0;
+   bool                        runAsDaemon  = false;
+   
+   openlog(argv[0], LOG_PID|LOG_CONS, LOG_LOCAL0);
+   syslog(LOG_USER, "Syslog has been setup for aesdsocket.log\n");
+   
+   if (argc == 2) {
+    if (strcmp(argv[1], "-d") == 0) {
+      runAsDaemon = true;
+      syslog(LOG_USER, "Running in daemon mode\n");
+    }
+   }
    
    returnCode = pthread_mutex_init(&criticalRegionSignal, NULL);
    if (returnCode != 0) {
@@ -131,10 +141,6 @@ int main(int argc, char *argv[]) {
       exit(0);
    }
    else if (theChildPid > 0) {
-     openlog(argv[0], LOG_PID|LOG_CONS, LOG_LOCAL0	);
-     syslog(LOG_USER, "Syslog has been setup for aesdsocket.log\n");
-
-
 	//char yes='1'; // Solaris people use this
 
 	// lose the pesky "Address already in use" error message
@@ -167,6 +173,13 @@ int main(int argc, char *argv[]) {
        fprintf(stderr, "bind error: %s\n", gai_strerror(errno));
        exit(-1);
      }
+     
+     if (runAsDaemon) {
+       if (fork() != 0) {
+        exit(EXIT_SUCCESS);
+       }
+     }
+
 
      status = listen(my_socket, BACKLOG);
      if (status == -1) {

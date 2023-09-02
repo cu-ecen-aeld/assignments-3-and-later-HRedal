@@ -1,10 +1,10 @@
 ifdef $(CROSS_COMPILE)
   CC=$(CROSS_COMPILE)
 else
-  CC=gcc
+  CC=$(CROSS_COMPILE)gcc
 endif
 
-CFLAGS=-I. -g
+CFLAGS=-I. -g -Wall
 
 ODIR=obj
 
