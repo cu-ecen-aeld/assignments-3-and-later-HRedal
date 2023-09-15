@@ -1,8 +1,12 @@
-ifdef $(CROSS_COMPILE)
-  CC=$(CROSS_COMPILE)
+# CROSS_COMPILE = aarch64-none-linux-gnu-
+
+
+ifdef CROSS_COMPILE
+  CC:=$(CROSS_COMPILE)gcc
 else
-  CC=$(CROSS_COMPILE)gcc
+  CC:=gcc
 endif
+
 
 CFLAGS=-I. -g -Wall
 
