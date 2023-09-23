@@ -35,17 +35,29 @@ int getaddrinfo(const char *node,     // e.g. "www.example.com" or IP
 bool caught_sigint  = false;
 bool caught_sigterm = false;
 
-char* fileToWrite = FILE_TO_READWRITE;
-int   my_socket   = 0;
-FILE* filePointer = NULL; 
+char* fileToWrite = FILE_TO_READWRITE;     // Global variable specifying the file to store 
+                                           // temporally the data received
+int   my_socket   = 0;                     // Global variable to store the file descriptor
+                                           // to the socket for receiving data
+FILE* filePointer = NULL;                  // File pointer to the file to store temporally
+                                           // data received
 
+/**
+ * Function:         signal_handler
+ * Description:      Function in charge of handling interrupts received by the program
+ * Parameter:        signal_number -> Signal raised towards the program
+ * Pre:
+ * Post:             caught_sigint == true
+ *                   caught_sigterm == true
+ *                   filePointer is closed and deleted
+ * Return:           void
+ */
 static void signal_handler(int signal_number) {
   sigset_t previousMask;   
   sigset_t currentMask;
   sigprocmask(SIG_SETMASK, NULL, &previousMask);
   
   syslog(LOG_INFO, "Caught signal, exiting");
-  syslog(LOG_DEBUG, "Deleting file %s", FILE_TO_READWRITE);
   
   sigfillset(&currentMask);
   sigprocmask(SIG_SETMASK, &currentMask, NULL);
@@ -56,41 +68,75 @@ static void signal_handler(int signal_number) {
     caught_sigterm = true;
   }
   
+  syslog(LOG_DEBUG, "Closing socket");
   close(my_socket);
+
+  syslog(LOG_DEBUG, "Deleting file %s", FILE_TO_READWRITE);
   fclose(filePointer);
   remove(fileToWrite);
   
   sigprocmask(SIG_SETMASK, &previousMask, NULL);
 }
 
-FILE* create_file(const char* path) {
-   FILE* myFilePointer = fopen(path, "w+");
-   if (myFilePointer == NULL) {
-      fprintf(stderr, "Not possible to open the file to writedata received: %s\n", gai_strerror(errno));
-      exit(-1);
+/**
+ * Function:         create_file
+ * Description:      Function in charge of opening for writing the file pass as argument. If
+ *                   the file exist, the function truncates it.
+ * Parameter:        theFileName -> File name to be opened.
+ * Pre:              theFileName != NULL
+ * Post:             myFilePointer == FILE handler of the file.
+ * Return:           The pointer to FILE handler of the open file or NULL if the
+ *                   preconditions are not met.
+ */
+FILE* create_file(const char* theFileName) {
+   FILE* myFilePointer = NULL;
+   
+   if (theFileName != NULL) {
+     myFilePointer = fopen(theFileName, "w+");
+     if (myFilePointer == NULL) {
+       syslog(LOG_ERR, "Not possible to open the file to writedata received: %s\n", gai_strerror(errno));
+     }
    }
+   
    return myFilePointer;
 }
 
-int create_socket(const char* port) {
-   int        			status;
-   struct addrinfo 		hints;
-   struct addrinfo*		servinfo;  // will point to the results
-   int 			my_socketLocal = 0;
-   int                         option = 1;
+/**
+ * Function:         create_socket
+ * Description:      Function in charge of opening the socket for receiving incoming data.
+ * Parameter:        thePort -> String with the port to open.
+ * Pre:              thePort != NULL
+ * Post:             The socket has been opened or an interrupt has been received.
+ * Return:           The the handler to the opened socket or -1 if an error or an interrupt
+ *                   is found or preconditions are not met.
+ */
+int create_socket(const char* thePort) {
+   int                  status;
+   struct addrinfo      hints;
+   struct addrinfo*     servinfo;  // will point to the results
+   int                  my_socketLocal = 0;
+   int                  option         = 1;
+   
+   if (thePort == NULL) {
+     return -1;
+   }
 
-   memset(&hints, 0, sizeof(hints)); // make sure the struct is empty
-   hints.ai_family 	= AF_UNSPEC;		// don't care IPv4 or IPv6
-   hints.ai_socktype = SOCK_STREAM; 	// TCP stream sockets
-   hints.ai_flags 	= AI_PASSIVE;     	// fill in my IP for me
+   memset(&hints, 0, sizeof(hints));   // make sure the struct is empty
+   hints.ai_family    = AF_UNSPEC;     // don't care IPv4 or IPv6
+   hints.ai_socktype  = SOCK_STREAM;   // TCP stream sockets
+   hints.ai_flags     = AI_PASSIVE;    // fill in my IP for me
 
-   if ((status = getaddrinfo(NULL, port, &hints, &servinfo)) != 0) {
+   if ((status = getaddrinfo(NULL, thePort, &hints, &servinfo)) != 0) {
      fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(status));
      return -1;
    }
 
    status = -1;
    while (status == -1) {
+      if (caught_sigint || caught_sigterm) {
+        return -1;
+      }
+
       // make a socket
       my_socketLocal = socket(servinfo->ai_family, servinfo->ai_socktype, servinfo->ai_protocol);
       if (my_socketLocal != -1) {
@@ -108,9 +154,6 @@ int create_socket(const char* port) {
            close(my_socketLocal);
          }
       }
-      else if (caught_sigint || caught_sigterm) {
-        return -1;
-      }
    }
       // free the memory allocated for result
    freeaddrinfo(servinfo);
@@ -118,7 +161,15 @@ int create_socket(const char* port) {
    return my_socketLocal;
 }
 
-char* read_sock(int sock_fd){
+/**
+ * Function:         readDataFromSocket
+ * Description:      Function in charge of reading data from socket.
+ * Parameter:        sock_fd -> Socket file descriptor.
+ * Pre:              sock_fd >= 0
+ * Post:             Data has been read from the socket or NULL if no data is read.
+ * Return:           The data received in the socket.
+ */
+char* readDataFromSocket(int sock_fd){
 
     if (sock_fd < 0){
         return NULL;
@@ -161,6 +212,16 @@ char* read_sock(int sock_fd){
     return buffer;
 }
 
+/**
+ * Function:         receiveMessages
+ * Description:      Function in charge of receiving data and sending it back to the client.
+ * Parameter:        SocketFileDescriptor -> Socket file descriptor.
+ * Pre:              sock_fd >= 0
+ * Post:             Data has been read from the socket and send it back to the client or
+ *                   -1 is returned if an error is encountered.
+ * Return:           The 0 value is returned if the funcion finishes successfully or -1 
+ *                   if an error is found.
+ */
 int receiveMessages(int SocketFileDescriptor) {
   int        		status          = 0;
   int 			new_socket      = 0;
@@ -178,9 +239,8 @@ int receiveMessages(int SocketFileDescriptor) {
   
   remove(fileToWrite);
   
-  filePointer = fopen(fileToWrite, "w+");
+  filePointer = create_file(fileToWrite);
   if (filePointer == NULL) {
-    fprintf(stderr, "Not possible to open the file to writedata received: %s\n", gai_strerror(errno));
     return -1;
   }
   
@@ -209,32 +269,34 @@ int receiveMessages(int SocketFileDescriptor) {
     char *ipv4Address_str = inet_ntoa(((struct sockaddr_in*) &their_addr)->sin_addr);
     syslog(LOG_INFO, "Accepted connection from %s\n", ipv4Address_str);
     
-    receivedMessage = read_sock(new_socket);
-   
-    syslog(LOG_DEBUG, "Received number of bytes = %ld", strlen(receivedMessage));
+    receivedMessage = readDataFromSocket(new_socket);
+    if (receivedMessage != NULL) {
+      syslog(LOG_DEBUG, "Received number of bytes = %ld", strlen(receivedMessage));
 
-    if (filePointer != NULL) {
-      syslog(LOG_USER, "Storing contents in file: %s\n", receivedMessage);
-      fseek(filePointer, 0, SEEK_END);	
-      fprintf(filePointer, "%s", receivedMessage);
-    }
-
-    fseek(filePointer, 0, SEEK_SET);
-    while (true) {
-      if (!fgets(receivedMessage, sizeof(receivedMessage), filePointer))
-        break;
-            
-      stringLength    = strlen(receivedMessage);
-
-      numbytesSent    = 0;
-      indexInitBuffer = 0;
-      numbytesSent = send(new_socket, &receivedMessage[indexInitBuffer], stringLength, 0);
-      
-      while ((stringLength != -1) && (stringLength != numbytesSent)) {
-	 stringLength    -= numbytesSent;
-	 indexInitBuffer += numbytesSent;
-	 numbytesSent = send(new_socket, &receivedMessage[indexInitBuffer], stringLength, 0);
+      if (filePointer != NULL) {
+        syslog(LOG_USER, "Storing contents in file: %s\n", receivedMessage);
+        fseek(filePointer, 0, SEEK_END);	
+        fprintf(filePointer, "%s", receivedMessage);
       }
+
+      fseek(filePointer, 0, SEEK_SET);
+      while (true) {
+        if (!fgets(receivedMessage, sizeof(receivedMessage), filePointer))
+          break;
+            
+        stringLength    = strlen(receivedMessage);
+
+        numbytesSent    = 0;
+        indexInitBuffer = 0;
+        numbytesSent = send(new_socket, &receivedMessage[indexInitBuffer], stringLength, 0);
+      
+        while ((stringLength != -1) && (stringLength != numbytesSent)) {
+	  stringLength    -= numbytesSent;
+	  indexInitBuffer += numbytesSent;
+	  numbytesSent = send(new_socket, &receivedMessage[indexInitBuffer], stringLength, 0);
+        }
+      }
+      free(receivedMessage);
     }
 
     syslog(LOG_INFO, "Closed connection from %s\n", ipv4Address_str);
@@ -292,9 +354,12 @@ int main(int argc, char *argv[]) {
    }
    
    my_socket = create_socket(PORT);
+   if (my_socket == -1) {
+     syslog(LOG_ERR, "Error when opening the socket for receiving data");
+     exit(EXIT_FAILURE);
+   }
    
    int returnValue = receiveMessages(my_socket);
-   
    if (returnValue != 0) {
      syslog(LOG_ERR, "Failure when reading message in the socket");
      remove(FILE_TO_READWRITE);
