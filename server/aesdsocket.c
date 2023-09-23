@@ -34,48 +34,49 @@ int getaddrinfo(const char *node,     // e.g. "www.example.com" or IP
 
 bool caught_sigint  = false;
 bool caught_sigterm = false;
-bool endGracefully  = false;
 
-pthread_mutex_t criticalRegionSignal;
-pthread_mutex_t criticalRegionChild;
+char* fileToWrite = FILE_TO_READWRITE;
+int   my_socket   = 0;
+FILE* filePointer = NULL; 
 
 static void signal_handler(int signal_number) {
   sigset_t previousMask;   
   sigset_t currentMask;
   sigprocmask(SIG_SETMASK, NULL, &previousMask);
   
+  syslog(LOG_INFO, "Caught signal, exiting");
+  syslog(LOG_DEBUG, "Deleting file %s", FILE_TO_READWRITE);
+  
   sigfillset(&currentMask);
   sigprocmask(SIG_SETMASK, &currentMask, NULL);
-  
-  pthread_mutex_lock(&criticalRegionSignal);
   
   if (signal_number == SIGINT) {
     caught_sigint = true;
   } else if (signal_number == SIGTERM) {
-     caught_sigterm = true;
+    caught_sigterm = true;
   }
   
-  pthread_mutex_unlock(&criticalRegionSignal);
+  close(my_socket);
+  fclose(filePointer);
+  remove(fileToWrite);
   
   sigprocmask(SIG_SETMASK, &previousMask, NULL);
 }
 
-char* fileToWrite = FILE_TO_READWRITE;
-
 FILE* create_file(const char* path) {
-   FILE* filePointer = fopen(fileToWrite, "w+");
-   if (filePointer == NULL) {
+   FILE* myFilePointer = fopen(path, "w+");
+   if (myFilePointer == NULL) {
       fprintf(stderr, "Not possible to open the file to writedata received: %s\n", gai_strerror(errno));
       exit(-1);
    }
-   return filePointer;
+   return myFilePointer;
 }
 
 int create_socket(const char* port) {
    int        			status;
    struct addrinfo 		hints;
    struct addrinfo*		servinfo;  // will point to the results
-   int 			my_socket;
+   int 			my_socketLocal = 0;
    int                         option = 1;
 
    memset(&hints, 0, sizeof(hints)); // make sure the struct is empty
@@ -83,7 +84,7 @@ int create_socket(const char* port) {
    hints.ai_socktype = SOCK_STREAM; 	// TCP stream sockets
    hints.ai_flags 	= AI_PASSIVE;     	// fill in my IP for me
 
-   if ((status = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) {
+   if ((status = getaddrinfo(NULL, port, &hints, &servinfo)) != 0) {
      fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(status));
      return -1;
    }
@@ -91,46 +92,164 @@ int create_socket(const char* port) {
    status = -1;
    while (status == -1) {
       // make a socket
-      my_socket = socket(servinfo->ai_family, servinfo->ai_socktype, servinfo->ai_protocol);
-      if (my_socket != -1) {
+      my_socketLocal = socket(servinfo->ai_family, servinfo->ai_socktype, servinfo->ai_protocol);
+      if (my_socketLocal != -1) {
    
-         if (setsockopt(my_socket, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &option, sizeof(option)) == -1) {
+         if (setsockopt(my_socketLocal, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &option, sizeof(option)) == -1) {
             perror("setsockopt");
            fprintf(stderr, "setsockopt error: %s\n", gai_strerror(status));
            return -1;
          }
 
          // bind it to the port we passed in to getaddrinfo();
-         status = bind(my_socket, servinfo->ai_addr, servinfo->ai_addrlen);
+         status = bind(my_socketLocal, servinfo->ai_addr, servinfo->ai_addrlen);
          if (status == -1) {
            fprintf(stderr, "bind error: %s\n", gai_strerror(errno));
-           close(my_socket);
+           close(my_socketLocal);
          }
+      }
+      else if (caught_sigint || caught_sigterm) {
+        return -1;
       }
    }
       // free the memory allocated for result
    freeaddrinfo(servinfo);
 
-   return my_socket;
+   return my_socketLocal;
 }
 
-int main(int argc, char *argv[]) {
-   int        			status;
+char* read_sock(int sock_fd){
 
-   struct addrinfo*		servinfo;  // will point to the results
-   socklen_t  			addr_size;
+    if (sock_fd < 0){
+        return NULL;
+    }
 
-   struct sockaddr_in		their_addr;
-   int 			my_socket;
-   int 			new_socket;
-   int 			numbytes;
-   int				numbytesSent;
-   int				indexInitBuffer;
-   char 			buffer[MAXDATASIZE];
-   // int 			yes=1;
+    char* buffer = (char * )malloc(1);
+    memset((void *) buffer, '\0', 1);
+    int ret_value = -1;
+    size_t capacity = 0;
+    size_t filled = 0;
+
+    do {
+        char byte;
+        ret_value = read(sock_fd, &byte, 1);
+
+        if (ret_value == -1){
+            break;
+        }
+        ++filled;
+        if (filled >= capacity){
+            capacity += filled * 4;
+            syslog(LOG_DEBUG, "Expanding buffer to %ld", capacity);
+            void* new = realloc((void*)buffer, capacity);
+
+            if (!new){
+                return NULL;
+            }
+            buffer = (char * )new;
+        }
+
+        buffer[filled] = '\0';
+        buffer[filled - 1] = byte;
+
+        if (byte == '\n'){
+            break;
+        }
+
+    } while (ret_value != 0);
+
+    return buffer;
+}
+
+int receiveMessages(int SocketFileDescriptor) {
+  int        		status          = 0;
+  int 			new_socket      = 0;
+  char*                receivedMessage = NULL;
+  socklen_t            addr_size;
+  struct sockaddr_in   their_addr;
+  int                  stringLength    = 0;
+  int                  numbytesSent    = 0;
+  int                  indexInitBuffer = 0;
+  
+  if (SocketFileDescriptor == -1) {
+    syslog(LOG_ERR, "Invalid socket file descriptor");
+    return -1;
+  }
+  
+  remove(fileToWrite);
+  
+  filePointer = fopen(fileToWrite, "w+");
+  if (filePointer == NULL) {
+    fprintf(stderr, "Not possible to open the file to writedata received: %s\n", gai_strerror(errno));
+    return -1;
+  }
+  
+  status = listen(my_socket, BACKLOG);
+  if (status == -1) {
+    fprintf(stderr, "listen error: %s\n", gai_strerror(errno));
+    return -1;
+  }
+  
+  while (true) {
+    printf("Accepting new connection:");
+    addr_size = sizeof(their_addr);
+    new_socket = accept(my_socket, (struct sockaddr*)&their_addr, &addr_size);
+
+    if (new_socket == -1) {
+      if (!caught_sigint && !caught_sigterm) {
+        syslog(LOG_ERR, "socket accept error: %s\n", gai_strerror(errno));
+        usleep(1000);
+        continue;
+      }
+      else {
+        return -1;
+      }
+    }
+    
+    char *ipv4Address_str = inet_ntoa(((struct sockaddr_in*) &their_addr)->sin_addr);
+    syslog(LOG_INFO, "Accepted connection from %s\n", ipv4Address_str);
+    
+    receivedMessage = read_sock(new_socket);
    
+    syslog(LOG_DEBUG, "Received number of bytes = %ld", strlen(receivedMessage));
+
+    if (filePointer != NULL) {
+      syslog(LOG_USER, "Storing contents in file: %s\n", receivedMessage);
+      fseek(filePointer, 0, SEEK_END);	
+      fprintf(filePointer, "%s", receivedMessage);
+    }
+
+    fseek(filePointer, 0, SEEK_SET);
+    while (true) {
+      if (!fgets(receivedMessage, sizeof(receivedMessage), filePointer))
+        break;
+            
+      stringLength    = strlen(receivedMessage);
+
+      numbytesSent    = 0;
+      indexInitBuffer = 0;
+      numbytesSent = send(new_socket, &receivedMessage[indexInitBuffer], stringLength, 0);
+      
+      while ((stringLength != -1) && (stringLength != numbytesSent)) {
+	 stringLength    -= numbytesSent;
+	 indexInitBuffer += numbytesSent;
+	 numbytesSent = send(new_socket, &receivedMessage[indexInitBuffer], stringLength, 0);
+      }
+    }
+
+    syslog(LOG_INFO, "Closed connection from %s\n", ipv4Address_str);
+    close(new_socket);
+  }
+
+  fclose(filePointer);
+  shutdown(SocketFileDescriptor, SHUT_RDWR);
+  
+  return 0;
+}
+
+
+int main(int argc, char *argv[]) {
    int                         returnCode   = 0;
-   int                         stringLength = 0;
    bool                        runAsDaemon  = false;
    pid_t                       theChildPid;
    
@@ -145,22 +264,9 @@ int main(int argc, char *argv[]) {
     }
    }
    
-   returnCode = pthread_mutex_init(&criticalRegionSignal, NULL);
-   if (returnCode != 0) {
-      fprintf(stderr, "Error: %d (%s) when initializing signal mutex.", errno, strerror(errno));
-      exit(-1);
-   }
-
-   returnCode = pthread_mutex_init(&criticalRegionChild, NULL);
-   if (returnCode != 0) {
-      fprintf(stderr, "Error: %d (%s) when initializing child mutex.", errno, strerror(errno));
-     exit(-1);
-   }
-   
    struct sigaction            new_action;
    memset(&new_action, 0, sizeof(struct sigaction));
    new_action.sa_handler = signal_handler;
-   FILE*                       filePointer = NULL; 
    
    if (sigaction(SIGTERM, &new_action, NULL) != 0) {
       fprintf(stderr, "Error: %d (%s) registering for SIGTERM", errno, strerror(errno));
@@ -174,97 +280,27 @@ int main(int argc, char *argv[]) {
 
    if (runAsDaemon) {
       syslog(LOG_DEBUG, "Forking");
+      
       if ((theChildPid = fork()) < 0) {
-         syslog(LOG_ERR, "Fork failed");
-         exit(EXIT_FAILURE);
+        syslog(LOG_ERR, "Fork failed");
+        exit(EXIT_FAILURE);
+      }
+      else if (theChildPid > 0) {
+        syslog(LOG_INFO, "Child process id = %d", theChildPid);
+        exit(EXIT_SUCCESS); 
       }
    }
-
-   if (theChildPid > 0) {
-      syslog(LOG_INFO, "Child process: %d", theChildPid);
-      
-      exit(EXIT_SUCCESS);
-   }
    
-   if (runAsDaemon) {
-        if (setsid() < 0){
-            syslog(LOG_ERR, "setsid failed");
-            exit(EXIT_FAILURE);
-        }
-   }
-    
    my_socket = create_socket(PORT);
-
-   status = listen(my_socket, BACKLOG);
-   if (status == -1) {
-     fprintf(stderr, "listen error: %s\n", gai_strerror(errno));
-     exit(-1);
-   }
-
-   filePointer = fopen(fileToWrite, "w+");
-   if (filePointer == NULL) {
-     fprintf(stderr, "Not possible to open the file to writedata received: %s\n", gai_strerror(errno));
-     exit(-1);
-   }
-
-   while (true) {
-      printf("Accepting new connection:");
-      addr_size = sizeof(their_addr);
-      new_socket = accept(my_socket, (struct sockaddr*)&their_addr, &addr_size);
-
-      if (new_socket == -1) {
-	 fprintf(stderr, "socket accept error: %s\n", gai_strerror(errno));
-	    exit(-1);
-      }
-      printf("Connection accepted");
-
-      char *ipv4Address_str = inet_ntoa(((struct sockaddr_in*) &their_addr)->sin_addr);
-	
-      syslog(LOG_INFO, "Accepted connection from %s\n", ipv4Address_str);
-      if ((numbytes = recv(new_socket, buffer, MAXDATASIZE-1, 0)) == -1) {
-	fprintf(stderr, "Error receiving data on the socket %s\n", gai_strerror(errno));
-	   exit(-1);
-      }
-      
-      // Removing the \n character
-      buffer[strcspn(buffer, "\r\n")] = 0;
-
-      if (numbytes < MAXDATASIZE) {
-        buffer[numbytes] = '\0';
-      }
-
-      if (filePointer != NULL) {
-	syslog(LOG_USER, "Storing contents in file: %s\n", buffer);
-	fprintf(filePointer, "%s\n", buffer);
-      }
-	
-      fseek(filePointer, 0, SEEK_SET);
-	
-      while (true) {
-        if (!fgets(buffer, sizeof(buffer), filePointer))
-          break;
-        // buffer[strcspn(buffer, "\n")] = 0;
-            
-        stringLength    = strlen(buffer);
-
-        numbytesSent    = 0;
-        indexInitBuffer = 0;
-	numbytesSent = send(new_socket, &buffer[indexInitBuffer], stringLength, 0);
-	while ((stringLength != -1) && (stringLength != numbytesSent)) {
-	  stringLength    -= numbytesSent;
-	  indexInitBuffer += numbytesSent;
-	  numbytesSent = send(new_socket, &buffer[indexInitBuffer], stringLength, 0);
-	}
-      }
-
-      syslog(LOG_INFO, "Closed connection from %s\n", ipv4Address_str);
-      close(new_socket);
-   }
-
-   close(my_socket);
-
-   freeaddrinfo(servinfo); // free the linked-list
    
-   return 0;
+   int returnValue = receiveMessages(my_socket);
+   
+   if (returnValue != 0) {
+     syslog(LOG_ERR, "Failure when reading message in the socket");
+     remove(FILE_TO_READWRITE);
+     exit(EXIT_FAILURE);
+   }
+   
+   return returnCode;
 }
 
