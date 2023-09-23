@@ -313,7 +313,8 @@ int receiveMessages(int SocketFileDescriptor) {
 int main(int argc, char *argv[]) {
    int                         returnCode   = 0;
    bool                        runAsDaemon  = false;
-   pid_t                       theChildPid;
+   pid_t                       theChildPid  = 0;
+   pid_t                       theSid       = 0;
    
    
    openlog(argv[0], LOG_PID|LOG_CONS, LOG_LOCAL0);
@@ -340,6 +341,8 @@ int main(int argc, char *argv[]) {
       exit(-1);
    }
 
+   // The following process is mandatory to get a daemon runnning and detached from the
+   // console or terminal
    if (runAsDaemon) {
       syslog(LOG_DEBUG, "Forking");
       
@@ -350,6 +353,13 @@ int main(int argc, char *argv[]) {
       else if (theChildPid > 0) {
         syslog(LOG_INFO, "Child process id = %d", theChildPid);
         exit(EXIT_SUCCESS); 
+      }
+      
+      // Now seting new sesion
+      theSid = setsid();
+      if (theSid < 0) {
+        syslog(LOG_ERR, "setsid() failed");
+        exit(EXIT_FAILURE);
       }
    }
    
