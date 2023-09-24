@@ -320,6 +320,12 @@ int main(int argc, char *argv[]) {
    openlog(argv[0], LOG_PID|LOG_CONS, LOG_LOCAL0);
    syslog(LOG_USER, "Syslog has been setup for aesdsocket.log\n");
    
+   my_socket = create_socket(PORT);
+   if (my_socket == -1) {
+     syslog(LOG_ERR, "Error when opening the socket for receiving data");
+     exit(EXIT_FAILURE);
+   }
+   
    if (argc == 2) {
     if (strcmp(argv[1], "-d") == 0) {
       runAsDaemon = true;
@@ -361,12 +367,6 @@ int main(int argc, char *argv[]) {
         syslog(LOG_ERR, "setsid() failed");
         exit(EXIT_FAILURE);
       }
-   }
-   
-   my_socket = create_socket(PORT);
-   if (my_socket == -1) {
-     syslog(LOG_ERR, "Error when opening the socket for receiving data");
-     exit(EXIT_FAILURE);
    }
    
    int returnValue = receiveMessages(my_socket);
